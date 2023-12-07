@@ -1,4 +1,4 @@
-name: Build for beyond2lte
+name: beyond2lte
 
 on:
   workflow_dispatch:
