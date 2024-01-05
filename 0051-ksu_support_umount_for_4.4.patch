@@ -1,0 +1,76 @@
+KernelSU: support umount modules for 4.4 or higher Non-GKI kernel
+from wxt1221 tiann/KernelSU pr #1060
+--- a/KernelSU/kernel/core_hook.c	2023-11-20 16:15:20.950130000 +0800
++++ b/KernelSU/kernel/core_hook.c	2023-11-20 20:40:17.052177835 +0800
+@@ -18,6 +18,7 @@
+ #include "linux/fs.h"
+ #include "linux/namei.h"
+ #include "linux/rcupdate.h"
++#include "../../fs/mount.h"
+ 
+ #include "allowlist.h"
+ #include "arch.h"
+@@ -30,6 +31,51 @@
+ #include "uid_observer.h"
+ #include "kernel_compat.h"
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
++
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)
++extern bool may_mount(void);
++extern int check_mnt(struct mount *mnt);
++extern void mntput_no_expire(struct mount *mnt);
++extern int do_umount(struct mount *mnt, int flags);
++static inline bool ksu_path_mounted(const struct path *path)
++	{
++		return path->mnt->mnt_root == path->dentry;
++	}
++	static int ksu_can_umount(const struct path *path, int flags)
++	{
++		struct mount *mnt = real_mount(path->mnt);
++
++		if (!may_mount())
++			return -EPERM;
++		if (!ksu_path_mounted(path))
++			return -EINVAL;
++		if (!check_mnt(mnt))
++			return -EINVAL;
++		if (mnt->mnt.mnt_flags & MNT_LOCKED) /* Check optimistically */
++			return -EINVAL;
++		if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
++			return -EPERM;
++		return 0;
++	}
++	int ksu_path_umount(struct path *path, int flags)
++{
++	struct mount *mnt = real_mount(path->mnt);
++	int  ret ;
++
++	ret = ksu_can_umount(path, flags);
++	if (!ret)
++		ret = do_umount(mnt, flags);
++
++	/* we mustn't call path_put() as that would clear mnt_expiry_mark */
++	dput(path->dentry);
++	mntput_no_expire(mnt);
++	return ret;
++}
++#else
++	//not tested
++#endif
++
+ extern int handle_sepolicy(unsigned long arg3, void __user *arg4);
+ 
+ static inline bool is_allow_su()
+@@ -495,7 +541,10 @@
+ 		pr_info("umount %s failed: %d\n", path->dentry->d_iname, err);
+ 	}
+ #else
+-	// TODO: umount for non GKI kernel
++	int err = ksu_path_umount(path, flags);
++	if (err) {
++		pr_info("umount %s failed: %d\n", path->dentry->d_iname, err);
++	}
+ #endif
+ }
+ 
